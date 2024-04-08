@@ -1,0 +1,247 @@
+#include <ESP8266WiFi.h>
+#include <DNSServer.h>
+#include <ESP8266WebServer.h>
+#include <WiFiManager.h>
+#include <Adafruit_AHTX0.h>
+
+
+#define BuzzerPin 12
+#define GasSensorPin A0
+#define LedRed 5
+#define LedGreen 16
+#define LedBlue 14
+#define Aht10First 13
+#define Aht10Second 15
+#define FrontRightEngine 1
+#define FrontLeftEngine 0
+#define RearRightEngine 3
+#define RearLeftEngine 2
+#define SOUND_VELOCITY 0.034
+
+
+const int trigPin = 9;
+const int echoPin = 10;
+const int IN1 = 0;
+const int IN2 = 2;
+const int IN3 = 1;
+const int IN4 = 3;
+long duration;
+float distanceCm;
+sensors_event_t humidity, temp;
+
+
+Adafruit_AHTX0 aht;
+
+WiFiServer server(80);
+
+String header;
+
+String output5State = "off";
+String output4State = "off";
+
+const int output5 = 0;
+const int output4 = 2;
+
+int gasValue = 0;
+
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT); 
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT); 
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(LedRed, OUTPUT);
+  pinMode(LedGreen, OUTPUT);
+  pinMode(LedBlue, OUTPUT);
+  pinMode(BuzzerPin, OUTPUT);
+  
+  Serial.println("Startujemy ...");
+
+  WiFiManager wifiManager;
+
+  wifiManager.autoConnect("RoboStopSmog");
+  
+  Serial.println("Polaczono z wifi");
+  wifiManager.resetSettings();
+  server.begin();
+}
+
+void loop(){
+  
+  WiFiClient client = server.available();   
+
+  if (client) {                             
+    Serial.println("New Client.");         
+    sensorLogic();
+    String currentLine = "";               
+    while (client.connected()) {            
+      if (client.available()) {             
+
+        char c = client.read();            
+        Serial.write(c);                   
+        header += c;
+        if (c == '\n') {                   
+          if (currentLine.length() == 0) {
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-type:text/html");
+            client.println("Connection: close");
+            client.println();
+            
+
+            if (header.indexOf("GET /forward/") >= 0) {
+              goForward();
+            }
+            else if (header.indexOf("GET /right/") >= 0) {
+              goRight();
+            }
+            else if (header.indexOf("GET /left/") >= 0) {
+              goLeft();
+            }
+            else if (header.indexOf("GET /stop/") >= 0) {
+              stop();
+            }
+            else if (header.indexOf("GET /refresh/") >= 0) {
+              refresh();
+            }
+
+            client.println("<!DOCTYPE html><html>");
+            client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+            client.println("<link rel=\"icon\" href=\"data:,\">");
+            client.println("<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}");
+            client.println(".button { background-color: #195B6A; border: none; color: white; padding: 16px 40px;");
+            client.println("text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}");
+            client.println(".button2 {background-color: #77878A;}</style></head>");
+            
+            client.println("<body><h1>RoboStopSmog</h1>");
+            
+            client.println("<p>Wartosc z czujnika MQ-9: " + String(gasValue) + "</p>");
+
+            if(gasValue>42) {
+              client.println("<p>Powietrze jest zanieczyszczone !</p>");
+            }
+            else {
+              client.println("<p>Powietrze jest w normie </p>");
+            }
+
+            client.println("<p>Temperatura: " + String(temp.temperature) + "</p>");            
+            client.println("<p>Wilgotnosc powietrza: " + String(humidity.relative_humidity) + "</p>");
+            client.println("<p>Odleglosc od przeszkody: " + String(distanceCm) + "</p>");
+
+            client.println("<p><a href=\"/forward/\"><button class=\"button button2\">Lewo</button></a></p>");
+            client.println("<p><a href=\"/right/\"><button class=\"button button2\">Prawo</button></a></p>");
+            client.println("<p><a href=\"/left/\"><button class=\"button button2\">Gora</button></a></p>");
+            client.println("<p><a href=\"/stop/\"><button class=\"button button2\">Stop</button></a></p>");
+                  
+            // client.println("<p><a href=\"/refresh/\"><input type="button" value = "Refresh" onclick="history.go(0)" /></a></p>");
+            client.println("<p><a href=\"/refresh/\"><button class=\"button button2\">Wyswietl dane</button></a></p>");
+
+            client.println();
+            break;
+          } else { 
+            currentLine = "";
+          }
+        } else if (c != '\r') {  
+          currentLine += c;      
+        }
+      }
+    }
+    header = "";
+    client.stop();
+    Serial.println("Client disconnected.");
+    Serial.println("");
+  }
+
+}
+void sensorLogic() {
+  sensors_event_t humidity, temp;
+
+  aht.getEvent(&humidity, &temp);
+
+  gasValue = analogRead(GasSensorPin);
+
+  digitalWrite(trigPin, LOW);
+
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  
+  duration = pulseIn(echoPin, HIGH);
+  
+  distanceCm = duration * SOUND_VELOCITY/2;
+
+  // KONIEC Czujnik HC-SR04
+  
+  // Czujnik MQ-9 
+  int gasThreshold = 42; 
+
+  if (gasValue > gasThreshold) {
+    
+    digitalWrite(BuzzerPin, HIGH);
+    Serial.print("Powietrze jest zanieczyszczone! Buzzer jest wlaczony");
+    digitalWrite(LedRed, HIGH);
+  } else {
+    digitalWrite(BuzzerPin, LOW);
+    digitalWrite(LedRed, LOW);
+    Serial.print("Powietrze jest w normie. Buzzer jest wylaczony");
+  }
+  //  KONIEC Czujnik MQ-9
+
+  // Wypisywanie wartosci ze wszystkich czujnikow
+
+  Serial.print("Dystans (cm): ");
+  Serial.println(distanceCm);
+  Serial.print("Wartosc z czujnika MQ-9: ");
+  Serial.println(gasValue);
+  Serial.print("Temperatura: "); 
+  Serial.println(temp.temperature); 
+  Serial.println(" stopni Celsjusza");
+  Serial.print("Wilgotnosc: "); 
+  Serial.print(humidity.relative_humidity); 
+  Serial.println("%"); 
+  delay(10);
+}
+
+
+void goForward() {
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, HIGH);
+  Serial.println("Jade do przodu");
+}
+
+void goLeft() {
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+  Serial.println("Skręcam w lewo");
+}
+
+void goRight() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, HIGH);
+  Serial.println("Skręcam w prawo");
+}
+
+void stop() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+  Serial.println("Zatrzymuję się");
+}
+
+void refresh() {
+  Serial.println("odswiezam strone");
+}
